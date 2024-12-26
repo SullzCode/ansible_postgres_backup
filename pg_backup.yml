@@ -1,0 +1,61 @@
+---
+- name: PostgreSQL Backup and S3 Upload Server 
+  hosts: servers
+  remote_user: ubuntu
+  become: yes
+  vars_files:
+    - vars.yml
+  tasks:
+    - name: Update all packages
+      apt:
+        name: "*"
+        state: latest
+        update_cache: yes
+    - name: Install required packages
+      apt:
+        name:
+          - python3-pip
+          - python3-boto3
+          - python3-botocore
+          - postgresql-client
+        state: present
+
+    - name: Install unzip
+      apt: 
+        name: unzip
+        state: latest
+
+    - name: Install AWS CLI
+      shell: |
+        curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+        unzip awscliv2.zip
+        ./aws/install
+      args:
+        creates: /usr/local/bin/aws
+    - name: Configure AWS CLI
+      shell: |
+        aws configure set aws_access_key_id {{ aws_access_key }}
+        aws configure set aws_secret_access_key {{ aws_secret_key }}
+        aws configure set region {{ aws_region }}
+      no_log: true
+    - name: Create backup directory
+      file:
+        path: "/var/backups/postgresql"
+        state: directory
+        mode: "0700"
+    - name: Perform PostgreSQL backup
+      shell: |
+        PGPASSWORD={{ postgres_password }} pg_dump -U {{ postgres_user }} -d {{ postgres_db }} > /var/backups/postgresql/{{ postgres_db }}-{{ ansible_date_time.date }}-{{ ansible_date_time.time }}.sql
+      args:
+        executable: "/bin/bash"
+    - name: Compress the backup
+      shell:
+        cmd: gzip -f /var/backups/postgresql/{{ postgres_db }}-{{ ansible_date_time.date }}-{{ ansible_date_time.time }}.sql
+        executable: "/bin/bash"
+    - name: Upload backup to S3
+      aws_s3:
+        bucket: "{{ s3_bucket }}"
+        object: "{{ s3_prefix }}/{{ postgres_db }}-{{ ansible_date_time.date }}-{{ ansible_date_time.time }}.sql.gz"
+        src: "/var/backups/postgresql/{{ postgres_db }}-{{ ansible_date_time.date }}-{{ ansible_date_time.time }}.sql.gz"
+        mode: put
+        permission: "private"
